@@ -264,6 +264,7 @@ else:
             df_lines['class_name_length'] = df_lines['class_name'].astype(str).str.len()
 
         # Select features for line model
+        # Select features for line model
         line_features = []
         potential_features = [
             # Size metrics
@@ -301,14 +302,25 @@ else:
         ]
 
         for feat in potential_features:
-            if feat in df_lines.columns and df_lines[feat].dtype in ['int64', 'float64']:
+            if feat in df_lines.columns and df_lines[feat].dtype in ['int64', 'float64', 'float32']:
                 line_features.append(feat)
 
+        # Check if we have enough features
         if len(line_features) < 2:
             print(f"\n⚠️  Not enough valid features ({len(line_features)}). Skipping Model 1.")
             model_1 = None
         else:
             print(f"\n✓ Using {len(line_features)} features: {line_features}")
+
+            # DIAGNOSTIC: Check if sentiment features made it in
+            sentiment_features = [f for f in line_features if f.startswith('sentiment_')]
+            if len(sentiment_features) == 0:
+                print("⚠️  WARNING: No sentiment features included! Check dtypes:")
+                for sf in ['sentiment_neg', 'sentiment_pos', 'sentiment_neu', 'sentiment_compound']:
+                    if sf in df_lines.columns:
+                        print(f"  {sf}: {df_lines[sf].dtype}")
+            else:
+                print(f"✓ Sentiment features included: {sentiment_features}")
 
             # Prepare data
             X_lines = df_lines[line_features].fillna(0)
@@ -479,7 +491,7 @@ model_2 = Pipeline([
         colsample_bytree=0.8,
         random_state=42,
         eval_metric='logloss',
-        scale_pos_weight=len(y_train_b[y_train_b == 0]) / len(y_train_b[y_train_b == 1])
+        # scale_pos_weight=len(y_train_b[y_train_b == 0]) / len(y_train_b[y_train_b == 1])
     ))
 ])
 
