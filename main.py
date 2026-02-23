@@ -10,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 from sklearn.metrics import classification_report, roc_auc_score
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import joblib
 
 print("=" * 70)
@@ -106,6 +107,17 @@ else:
             print(f"\n✓ Target created successfully")
             print(f"  Buggy lines: {df_lines['is_buggy'].sum():,} ({df_lines['is_buggy'].mean():.2%})")
             print(f"  Clean lines: {(df_lines['is_buggy'] == 0).sum():,}")
+            if len(df_lines) > 100000:
+                print(f"\n⚠️  Large dataset detected ({len(df_lines):,} lines)")
+                print("Performing stratified sampling to keep class balance...")
+
+                df_lines = df_lines.groupby('is_buggy', group_keys=False).apply(
+                    lambda x: x.sample(min(len(x), 50000), random_state=42)
+                ).reset_index(drop=True)
+
+                # print(f"✓ Sampled to {len(df_lines):,} lines")
+                # print(f"  Buggy: {df_lines['is_buggy'].sum():,} ({df_lines['is_buggy'].mean():.2%})")
+                # print(f"  Clean: {(df_lines['is_buggy'] == 0).sum():,}")
 
         except Exception as e:
             print(f"\n✗ Error creating target: {e}")
@@ -126,16 +138,126 @@ else:
         # Basic features
         if 'contents' in df_lines.columns:
             print("Creating content-based features...")
-            df_lines['line_length'] = df_lines['contents'].astype(str).str.len()
-            df_lines['has_comment'] = df_lines['contents'].astype(str).str.contains('//', regex=False).astype(int)
-            df_lines['complexity_indicators'] = df_lines['contents'].astype(str).str.count(r'if|for|while|switch')
-            df_lines['has_semicolon'] = df_lines['contents'].astype(str).str.contains(';', regex=False).astype(int)
+
+            # Clean content first
+            df_lines['content_clean'] = df_lines['contents'].astype(str).str.strip()
+            df_lines['line_length'] = df_lines['content_clean'].str.len()
+
+            # === IDENTIFY COMMENTS FIRST ===
+            df_lines['is_comment'] = df_lines['content_clean'].str.contains(
+                r'^\s*(?://|/\*|\*|#)', regex=True, na=False
+            ).astype(int)
+
+            # === VADER ONLY ON COMMENTS (MAXIMUM MEMORY EFFICIENCY) ===
+            print("\nPerforming sentiment analysis on COMMENTS ONLY...")
+            analyzer = SentimentIntensityAnalyzer()
+
+            comment_mask = df_lines['is_comment'] == 1
+            num_comments = comment_mask.sum()
+
+            print(
+                f"  Found {num_comments:,} comment lines out of {len(df_lines):,} total ({num_comments / len(df_lines):.1%})")
+
+            # Pre-allocate NumPy arrays (most memory efficient)
+            sentiment_neg = np.zeros(len(df_lines), dtype=np.float32)
+            sentiment_pos = np.zeros(len(df_lines), dtype=np.float32)
+            sentiment_neu = np.zeros(len(df_lines), dtype=np.float32)
+            sentiment_compound = np.zeros(len(df_lines), dtype=np.float32)
+
+            if num_comments > 0:
+                print("  Processing comments (maximum memory efficiency)...")
+
+                # Get comment data
+                comment_indices = df_lines[comment_mask].index.tolist()
+                comment_texts = df_lines.loc[comment_mask, 'content_clean'].tolist()
+
+                batch_size = 5000
+                for i in range(0, len(comment_indices), batch_size):
+                    batch_end = min(i + batch_size, len(comment_indices))
+
+                    for j in range(i, batch_end):
+                        idx = comment_indices[j]
+                        text = comment_texts[j]
+                        scores = analyzer.polarity_scores(str(text))
+
+                        sentiment_neg[idx] = scores['neg']
+                        sentiment_pos[idx] = scores['pos']
+                        sentiment_neu[idx] = scores['neu']
+                        sentiment_compound[idx] = scores['compound']
+
+                    print(
+                        f"  Processed {batch_end:,} / {num_comments:,} comments ({batch_end / num_comments * 100:.1f}%)")
+
+                print(f"✓ Sentiment analysis complete on {num_comments:,} comments!")
+
+            # Assign arrays to DataFrame
+            df_lines['sentiment_neg'] = sentiment_neg
+            df_lines['sentiment_pos'] = sentiment_pos
+            df_lines['sentiment_neu'] = sentiment_neu
+            df_lines['sentiment_compound'] = sentiment_compound
+
+            # Free memory
+            del sentiment_neg, sentiment_pos, sentiment_neu, sentiment_compound
+
+            # Show examples
+            if num_comments >= 3:
+                print("\n--- Sample Comment Sentiments ---")
+                comment_samples = df_lines[comment_mask].nlargest(3, 'sentiment_neg')[
+                    ['content_clean', 'sentiment_neg', 'sentiment_compound']
+                ]
+                for idx, row in comment_samples.iterrows():
+                    print(f"Neg: {row['sentiment_neg']:.3f} | Compound: {row['sentiment_compound']:.3f}")
+                    print(f"  → {row['content_clean'][:80]}\n")
+            # === END VADER ===
+
+
+            # Other comment features
+            df_lines['is_todo_comment'] = df_lines['content_clean'].str.contains(
+                r'\b(?:TODO|FIXME|HACK|XXX|BUG)\b', case=False, regex=True, na=False
+            ).astype(int)
+
+            # Code complexity
+            df_lines['control_flow_count'] = df_lines['content_clean'].str.count(
+                r'\b(?:if|else|for|while|switch|case|catch|try)\b'
+            )
+
+            df_lines['method_call_count'] = df_lines['content_clean'].str.count(r'\w+\(')
+
+            df_lines['has_exception'] = df_lines['content_clean'].str.contains(
+                r'\b(?:Exception|Error|throw|throws)\b', regex=True, na=False
+            ).astype(int)
+
+            # Git diff markers
+            df_lines['is_diff_header'] = df_lines['content_clean'].str.contains(
+                r'^(?:\+\+|--|@@)', regex=True, na=False
+            ).astype(int)
+
+            # Code smells
+            df_lines['nested_depth'] = df_lines['content_clean'].apply(
+                lambda x: len(x) - len(x.lstrip()) if isinstance(x, str) else 0
+            ) // 4
+
+            df_lines['has_magic_number'] = df_lines['content_clean'].str.contains(
+                r'\b\d{2,}\b', regex=True, na=False
+            ).astype(int)
+
+            df_lines['has_logging'] = df_lines['content_clean'].str.contains(
+                r'\b(?:Log\.|logger|println)\b', regex=True, na=False
+            ).astype(int)
+
+            df_lines['has_null_check'] = df_lines['content_clean'].str.contains(
+                r'\b(?:null|NULL|isNull|isEmpty)\b', regex=True, na=False
+            ).astype(int)
 
         if 'path' in df_lines.columns:
             print("Creating path-based features...")
             df_lines['file_extension'] = df_lines['path'].astype(str).str.extract(r'\.([^.]+)$')[0]
-            df_lines['is_test_file'] = df_lines['path'].astype(str).str.contains('test', case=False, na=False).astype(
-                int)
+            df_lines['is_test_file'] = df_lines['path'].astype(str).str.contains(
+                r'(?:test|spec|mock)', case=False, na=False
+            ).astype(int)
+            df_lines['is_config_file'] = df_lines['path'].astype(str).str.contains(
+                r'\.(?:yml|yaml|gradle|xml|properties)$', case=False, na=False
+            ).astype(int)
             df_lines['path_depth'] = df_lines['path'].astype(str).str.count('/')
 
         if 'class_name' in df_lines.columns:
@@ -144,8 +266,38 @@ else:
         # Select features for line model
         line_features = []
         potential_features = [
-            'line_length', 'has_comment', 'complexity_indicators',
-            'is_test_file', 'path_depth', 'has_semicolon', 'class_name_length'
+            # Size metrics
+            'line_length',
+            'nested_depth',
+
+            # VADER sentiment features
+            'sentiment_neg',
+            'sentiment_pos',
+            'sentiment_neu',
+            'sentiment_compound',
+
+            # Comment indicators
+            'is_comment',
+            'is_todo_comment',
+
+            # Code complexity
+            'control_flow_count',
+            'method_call_count',
+            'has_exception',
+
+            # Git diff
+            'is_diff_header',
+
+            # Code quality
+            'has_magic_number',
+            'has_logging',
+            'has_null_check',
+
+            # File context
+            'is_test_file',
+            'is_config_file',
+            'path_depth',
+            'class_name_length'
         ]
 
         for feat in potential_features:
@@ -234,9 +386,13 @@ for root, dirs, files in os.walk('data/tsm'):
 df_builds = pd.concat(metric_dfs, ignore_index=True)
 print(f"✓ Total builds: {len(df_builds):,}")
 
-# Target
+
+# previous versioon - potentiall an error here. uncomment if the acc drops
 df_builds['failed'] = df_builds['tr_status'].astype(int)
 print(f"Failure rate: {df_builds['failed'].mean():.2%}")
+
+
+
 
 # Timestamps
 df_builds['ts'] = pd.to_datetime(df_builds['gh_build_started_at'], errors='coerce')
@@ -378,3 +534,6 @@ print(f"  → ROC-AUC: {roc_auc_score(y_test_b, y_prob_b):.4f}")
 
 print("\nFiles saved in: processed_data/")
 print("\n✓ Done!")
+
+
+# model ensemble; voting mechanisms sikit learn has gread setups for it - look up that documentation
