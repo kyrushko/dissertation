@@ -12,7 +12,7 @@ df_test = pd.read_csv(test_file, delimiter='$', quotechar='"')
 print(f"\n✓ Loaded {len(df_test):,} lines from {test_file}")
 
 
-df_sample = df_test.head(35000).copy()
+df_sample = df_test.head(10000).copy()
 
 print(f"Testing on first {len(df_sample):,} lines...")
 
