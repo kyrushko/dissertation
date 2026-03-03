@@ -375,6 +375,8 @@ else:
     else:
         model_1 = None
 
+
+
 # =========================
 # MODEL 2: Build-Level Prediction (WITHOUT prev_build_failed)
 # =========================
@@ -403,13 +405,102 @@ print(f"✓ Total builds: {len(df_builds):,}")
 df_builds['failed'] = df_builds['tr_status'].astype(int)
 print(f"Failure rate: {df_builds['failed'].mean():.2%}")
 
+# =========================
+# LINK LINES TO BUILDS (Timestamp Matching)
+# =========================
+print("\n" + "=" * 70)
+print("LINKING LINE DATA TO BUILD DATA")
+print("=" * 70)
 
+if model_1 is not None and len(df_builds) > 0:
 
+    # Parse timestamps
+    print("Parsing timestamps...")
+    df_lines['line_timestamp'] = pd.to_datetime(df_lines['date'], errors='coerce')
+    df_builds['build_timestamp'] = pd.to_datetime(df_builds['gh_build_started_at'], errors='coerce')
+
+    # Clean data
+    df_lines_clean = df_lines.dropna(subset=['line_timestamp']).copy()
+    df_builds_clean = df_builds.dropna(subset=['build_timestamp']).copy()
+
+    print(f"Line data: {len(df_lines_clean):,} lines")
+    print(f"Build data: {len(df_builds_clean):,} builds")
+
+    # Add build ID
+    df_builds_clean['build_id'] = range(len(df_builds_clean))
+
+    # Check timestamp overlap
+    line_start, line_end = df_lines_clean['line_timestamp'].min(), df_lines_clean['line_timestamp'].max()
+    build_start, build_end = df_builds_clean['build_timestamp'].min(), df_builds_clean['build_timestamp'].max()
+
+    print(f"\nTimestamp ranges:")
+    print(f"  Lines:  {line_start} to {line_end}")
+    print(f"  Builds: {build_start} to {build_end}")
+
+    if line_end < build_start or build_end < line_start:
+        print("\n❌ NO OVERLAP - Cannot link datasets")
+        df_lines_with_build = None
+    else:
+        overlap_start = max(line_start, build_start)
+        overlap_end = min(line_end, build_end)
+        print(f"  Overlap: {overlap_start} to {overlap_end}")
+
+        # Use merge_asof for timestamp matching
+        print("\nMatching lines to builds by timestamp...")
+
+        df_lines_sorted = df_lines_clean.sort_values('line_timestamp').reset_index(drop=True)
+        df_builds_sorted = df_builds_clean.sort_values('build_timestamp').reset_index(drop=True)
+
+        # Match each line to the nearest build (within 5 minutes)
+        df_lines_with_build = pd.merge_asof(
+            df_lines_sorted,
+            df_builds_sorted[['build_id', 'build_timestamp', 'tr_status', 'tr_original_commit']],
+            left_on='line_timestamp',
+            right_on='build_timestamp',
+            direction='nearest',  # Find closest build
+            tolerance=pd.Timedelta('5 minutes')  # Within 5 minutes
+        )
+
+        # Count matches
+        matched = df_lines_with_build['build_id'].notna().sum()
+        match_pct = matched / len(df_lines_with_build) * 100
+
+        print(f"\n✓ Matched {matched:,} / {len(df_lines_with_build):,} lines ({match_pct:.1f}%)")
+
+        if match_pct > 50:
+            # Calculate time differences
+            time_diff = (df_lines_with_build['build_timestamp'] - df_lines_with_build[
+                'line_timestamp']).dt.total_seconds().abs()
+            exact_matches = (time_diff == 0).sum()
+
+            print(f"\nMatching quality:")
+            print(f"  Exact timestamp matches: {exact_matches:,} ({exact_matches / matched * 100:.1f}%)")
+            print(f"  Average time gap: {time_diff.mean():.1f} seconds")
+            print(f"  Max time gap: {time_diff.max():.1f} seconds")
+
+            # Show unique builds matched
+            unique_builds = df_lines_with_build['build_id'].nunique()
+            print(f"  Unique builds matched: {unique_builds:,} / {len(df_builds_clean):,}")
+
+            # Save linked data
+            df_lines_with_build.to_csv('processed_data/lines_with_builds.csv', index=False)
+            print("\n✓ Saved linked data to processed_data/lines_with_builds.csv")
+
+        else:
+            print(f"\n⚠️  Low match rate ({match_pct:.1f}%) - linking may not be reliable")
+            df_lines_with_build = None
+
+else:
+    print("\n✗ Skipping linking (Model 1 not trained or no build data)")
+    df_lines_with_build = None
 
 # Timestamps
 df_builds['ts'] = pd.to_datetime(df_builds['gh_build_started_at'], errors='coerce')
 df_builds = df_builds.dropna(subset=['ts']).sort_values('ts').reset_index(drop=True)
 print(f"After timestamp cleaning: {len(df_builds):,} rows")
+
+df_builds['build_id'] = range(len(df_builds))  # ✓ Create build_id
+print(f"✓ Assigned build_id to {len(df_builds):,} builds")
 
 # Feature engineering (NO prev_build_failed!)
 print("\nEngineering build features...")
@@ -524,6 +615,423 @@ joblib.dump(model_2, 'processed_data/build_failure_model_clean.pkl')
 importance_df.to_csv('processed_data/feature_importance_clean.csv', index=False)
 print("\n✓ Saved Model 2 to processed_data/build_failure_model_clean.pkl")
 print("✓ Saved feature importance to processed_data/feature_importance_clean.csv")
+
+# ... Model 2 training ends here ...
+print("\n✓ Saved Model 2 to processed_data/build_failure_model_clean.pkl")
+print("✓ Saved feature importance to processed_data/feature_importance_clean.csv")
+
+
+# TRYING ALTERNATIVE MODEL 2 CONFIG
+print("\n" + "=" * 50)
+print("TRYING ALTERNATIVE MODEL 2 CONFIGURATIONS")
+print("=" * 50)
+
+from sklearn.ensemble import RandomForestClassifier
+
+# Try Random Forest
+model_2_rf = Pipeline([
+    ('scaler', StandardScaler()),
+    ('classifier', RandomForestClassifier(
+        n_estimators=500,
+        max_depth=15,
+        min_samples_split=10,
+        random_state=42,
+        class_weight='balanced'
+    ))
+])
+
+model_2_rf.fit(X_train_b, y_train_b)
+y_prob_rf = model_2_rf.predict_proba(X_test_b)[:, 1]
+auc_rf = roc_auc_score(y_test_b, y_prob_rf)
+
+print(f"\nRandom Forest AUC: {auc_rf:.4f}")
+print(f"XGBoost AUC:       {roc_auc_score(y_test_b, y_prob_b):.4f}")
+
+if auc_rf > roc_auc_score(y_test_b, y_prob_b):
+    print("✓ Random Forest is better - saving it instead")
+    joblib.dump(model_2_rf, 'processed_data/build_failure_model_clean.pkl')
+
+#     model 2 alternative trained
+
+
+# =========================
+# AGGREGATE LINE PREDICTIONS TO BUILD LEVEL (MEMORY EFFICIENT)
+# =========================
+print("\n" + "=" * 70)
+print("STEP: AGGREGATING LINE PREDICTIONS FOR ENSEMBLE")
+print("=" * 70)
+
+if df_lines_with_build is not None and model_1 is not None:
+
+    print(f"Processing {len(df_lines_with_build):,} lines...")
+
+    # Check how many builds we're working with
+    num_builds = df_lines_with_build['build_id'].nunique()
+    print(f"Unique builds: {num_builds:,}")
+
+    if num_builds == 0:
+        print("✗ No builds to aggregate - skipping ensemble")
+        build_line_agg = None
+    else:
+        # Get line features (dynamically detect which exist)
+        potential_features = [
+            'line_length', 'nested_depth', 'sentiment_neg', 'sentiment_pos',
+            'sentiment_neu', 'sentiment_compound', 'is_comment', 'is_todo_comment',
+            'control_flow_count', 'method_call_count', 'has_exception',
+            'is_diff_header', 'has_magic_number', 'has_logging', 'has_null_check',
+            'is_test_file', 'is_config_file', 'path_depth', 'class_name_length'
+        ]
+
+        available_features = [f for f in potential_features if f in df_lines_with_build.columns]
+        print(f"Using {len(available_features)} features for prediction")
+
+        # Predict in batches to manage memory
+        print("\nPredicting bug probability in batches...")
+        batch_size = 50000
+        predictions = []
+
+        for i in range(0, len(df_lines_with_build), batch_size):
+            batch = df_lines_with_build.iloc[i:i + batch_size]
+            X_batch = batch[available_features].fillna(0)
+            batch_preds = model_1.predict_proba(X_batch)[:, 1]
+            predictions.extend(batch_preds)
+
+            if (i + batch_size) % 100000 == 0 or i + batch_size >= len(df_lines_with_build):
+                processed = min(i + batch_size, len(df_lines_with_build))
+                print(f"  Processed {processed:,} / {len(df_lines_with_build):,} lines ({processed / len(df_lines_with_build) * 100:.1f}%)")
+
+        df_lines_with_build['bug_probability'] = predictions
+        print("✓ Predictions complete")
+
+        # Aggregate by build (memory efficient)
+        print("\nAggregating to build level...")
+
+        # Only keep columns we need for aggregation
+        agg_cols = ['build_id', 'bug_probability']
+        if 'is_todo_comment' in df_lines_with_build.columns:
+            agg_cols.append('is_todo_comment')
+        if 'sentiment_compound' in df_lines_with_build.columns:
+            agg_cols.append('sentiment_compound')
+        if 'has_exception' in df_lines_with_build.columns:
+            agg_cols.append('has_exception')
+
+        df_agg = df_lines_with_build[agg_cols].copy()
+
+        # Aggregate
+        build_line_agg = df_agg.groupby('build_id').agg({
+            'bug_probability': ['mean', 'max', 'std', 'count']
+        }).reset_index()
+
+        # Flatten column names
+        build_line_agg.columns = ['build_id', 'mean_line_risk', 'max_line_risk', 'std_line_risk', 'num_lines']
+
+        # Add optional features if they exist
+        if 'is_todo_comment' in df_agg.columns:
+            build_line_agg['num_todo_comments'] = df_agg.groupby('build_id')['is_todo_comment'].sum().values
+
+        if 'sentiment_compound' in df_agg.columns:
+            build_line_agg['mean_sentiment'] = df_agg.groupby('build_id')['sentiment_compound'].mean().values
+
+        if 'has_exception' in df_agg.columns:
+            build_line_agg['has_exception_handling'] = (df_agg.groupby('build_id')['has_exception'].sum() > 0).astype(int).values
+
+        # Count high-risk lines (do this separately to manage memory)
+        print("Calculating high-risk line counts...")
+        high_risk_counts = df_agg.groupby('build_id')['bug_probability'].apply(lambda x: (x > 0.7).sum())
+        build_line_agg['num_high_risk_lines'] = high_risk_counts.values
+
+        # Calculate percentage
+        build_line_agg['pct_risky_lines'] = build_line_agg['num_high_risk_lines'] / build_line_agg['num_lines']
+
+        print(f"✓ Aggregated to {len(build_line_agg):,} builds")
+        print(f"✓ Created {len(build_line_agg.columns) - 1} aggregate features")
+
+        # Show summary statistics
+        print("\n--- Aggregation Summary ---")
+        print(f"Mean lines per build: {build_line_agg['num_lines'].mean():.0f}")
+        print(f"Mean line risk: {build_line_agg['mean_line_risk'].mean():.3f}")
+        print(f"Mean high-risk lines per build: {build_line_agg['num_high_risk_lines'].mean():.1f}")
+
+        # Clean up memory
+        del df_agg
+        del predictions
+
+        # Save aggregates
+        build_line_agg.to_csv('processed_data/build_line_aggregates.csv', index=False)
+        print("\n✓ Saved to processed_data/build_line_aggregates.csv")
+
+else:
+    print("\n✗ Skipping aggregation (no linked data or Model 1 not trained)")
+    build_line_agg = None
+
+
+# =========================
+# TWO-STAGE PIPELINE: MODEL 1 → MODEL 2
+# =========================
+# =========================
+# TWO-STAGE PIPELINE: MODEL 1 → MODEL 2
+# =========================
+print("\n" + "=" * 70)
+print("TWO-STAGE PIPELINE: LINE FILTERING → BUILD PREDICTION")
+print("=" * 70)
+
+if build_line_agg is not None and model_2 is not None:
+
+    # Merge line aggregates with build data
+    print("Setting up pipeline...")
+    df_builds_with_lines = df_builds.merge(
+        build_line_agg,
+        on='build_id',
+        how='inner'  # Only matched builds
+    )
+
+    print(f"✓ Working with {len(df_builds_with_lines):,} builds with line data")
+
+    if len(df_builds_with_lines) < 20:
+        print("\n❌ Insufficient data for pipeline evaluation")
+    else:
+        # Sort by timestamp and split
+        df_builds_with_lines = df_builds_with_lines.sort_values('ts').reset_index(drop=True)
+
+        n = len(df_builds_with_lines)
+        train_end = int(n * 0.6)
+        val_end = int(n * 0.8)
+
+        train_data = df_builds_with_lines.iloc[:train_end]
+        val_data = df_builds_with_lines.iloc[train_end:val_end]
+        test_data = df_builds_with_lines.iloc[val_end:]
+
+        print(f"\nData splits:")
+        print(f"  Training: {len(train_data)} builds")
+        print(f"  Validation: {len(val_data)} builds")
+        print(f"  Test: {len(test_data)} builds")
+
+
+        # =========================
+        # DEFINE PIPELINE STRATEGIES
+        # =========================
+
+        def pipeline_stage1_filter(df, threshold=0.5):
+            """
+            Stage 1: Filter builds based on line-level risk
+
+            Returns:
+            - high_risk_mask: Boolean mask of high-risk builds
+            - low_risk_mask: Boolean mask of low-risk builds
+            """
+            # Multiple filtering criteria
+            high_risk_mask = (
+                    (df['max_line_risk'] > 0.8) |  # Any line very risky
+                    (df['mean_line_risk'] > threshold) |  # Average risk high
+                    (df['pct_risky_lines'] > 0.3) |  # >30% lines risky
+                    (df['num_todo_comments'] > 3)  # Many TODOs
+            )
+
+            low_risk_mask = ~high_risk_mask
+
+            return high_risk_mask, low_risk_mask
+
+
+        def pipeline_stage2_predict(df_high_risk, df_low_risk, model2, features):
+            """
+            Stage 2: Model 2 makes final decision
+
+            Strategy:
+            - Low risk builds: Predict PASS (skip Model 2)
+            - High risk builds: Use Model 2 to decide
+            """
+            predictions = []
+            probabilities = []
+
+            # Low-risk builds: Assume pass (override Model 2)
+            for idx in df_low_risk.index:
+                predictions.append(0)  # Predict PASS
+                probabilities.append(0.2)  # Low probability of failure
+
+            # High-risk builds: Use Model 2
+            if len(df_high_risk) > 0:
+                X_high_risk = df_high_risk[features].fillna(0)
+                probs = model2.predict_proba(X_high_risk)[:, 1]
+                preds = (probs > 0.5).astype(int)
+
+                for i in range(len(df_high_risk)):
+                    predictions.append(preds[i])
+                    probabilities.append(probs[i])
+
+            return np.array(predictions), np.array(probabilities)
+
+
+        def pipeline_hybrid_predict(df, model2, features, alpha=0.5):
+            """
+            Hybrid: Combine Model 1 signals with Model 2
+
+            Strategy: Model 2 gets BOOSTED by line-level signals
+            """
+            X = df[features].fillna(0)
+            model2_probs = model2.predict_proba(X)[:, 1]
+
+            # Boost based on line-level signals
+            line_risk_boost = (
+                    0.3 * df['max_line_risk'].values +  # Critical lines
+                    0.2 * df['mean_line_risk'].values +  # Average risk
+                    0.1 * (df['num_todo_comments'] > 2).astype(int).values +  # TODOs
+                    0.1 * (df['pct_risky_lines'] > 0.3).astype(int).values  # High % risky
+            )
+
+            # Combine: Model 2 + line signals
+            final_prob = np.clip(model2_probs + line_risk_boost, 0, 1)
+            final_pred = (final_prob > 0.5).astype(int)
+
+            return final_pred, final_prob
+
+
+        # =========================
+        # TUNE PIPELINE ON VALIDATION SET
+        # =========================
+
+        print("\n" + "=" * 50)
+        print("TUNING PIPELINE STRATEGIES")
+        print("=" * 50)
+
+        # Try different Stage 1 thresholds
+        best_threshold = 0.5
+        best_strategy_auc = 0
+        best_strategy_name = ""
+
+        strategies = {
+            'Stage1-Filter (threshold=0.3)': {'threshold': 0.3, 'type': 'filter'},
+            'Stage1-Filter (threshold=0.5)': {'threshold': 0.5, 'type': 'filter'},
+            'Stage1-Filter (threshold=0.7)': {'threshold': 0.7, 'type': 'filter'},
+            'Hybrid (alpha=0.5)': {'alpha': 0.5, 'type': 'hybrid'},
+        }
+
+        results = []
+
+        for name, params in strategies.items():
+            if params['type'] == 'filter':
+                # Filter strategy
+                threshold = params['threshold']
+                high_risk_mask, low_risk_mask = pipeline_stage1_filter(val_data, threshold)
+
+                df_high_risk = val_data[high_risk_mask]
+                df_low_risk = val_data[low_risk_mask]
+
+                # Predict
+                preds, probs = pipeline_stage2_predict(df_high_risk, df_low_risk, model_2, build_features)
+
+                # Sort back to original order
+                all_indices = list(df_low_risk.index) + list(df_high_risk.index)
+                sort_order = np.argsort(all_indices)
+                probs_sorted = probs[sort_order]
+
+            elif params['type'] == 'hybrid':
+                # Hybrid strategy
+                preds, probs_sorted = pipeline_hybrid_predict(val_data, model_2, build_features)
+
+            # Evaluate
+            auc = roc_auc_score(val_data['failed'].values, probs_sorted)
+            results.append({'strategy': name, 'auc': auc, 'params': params})
+
+            print(f"{name}: AUC = {auc:.4f}")
+
+            if auc > best_strategy_auc:
+                best_strategy_auc = auc
+                best_strategy_name = name
+                best_params = params
+
+        print(f"\n✓ Best strategy: {best_strategy_name}")
+        print(f"  Validation AUC: {best_strategy_auc:.4f}")
+
+        # =========================
+        # EVALUATE ON TEST SET
+        # =========================
+
+        print("\n" + "=" * 70)
+        print("PIPELINE EVALUATION ON TEST SET")
+        print("=" * 70)
+
+        # Apply best strategy to test set
+        if best_params['type'] == 'filter':
+            threshold = best_params['threshold']
+            high_risk_mask, low_risk_mask = pipeline_stage1_filter(test_data, threshold)
+
+            df_high_risk = test_data[high_risk_mask]
+            df_low_risk = test_data[low_risk_mask]
+
+            print(f"\nStage 1 Filtering (threshold={threshold}):")
+            print(f"  Low-risk builds: {len(df_low_risk)} ({len(df_low_risk) / len(test_data) * 100:.1f}%)")
+            print(f"  High-risk builds: {len(df_high_risk)} ({len(df_high_risk) / len(test_data) * 100:.1f}%)")
+
+            preds, probs = pipeline_stage2_predict(df_high_risk, df_low_risk, model_2, build_features)
+
+            # Sort back
+            all_indices = list(df_low_risk.index) + list(df_high_risk.index)
+            sort_order = np.argsort(all_indices)
+            probs_sorted = probs[sort_order]
+            preds_sorted = preds[sort_order]
+
+        elif best_params['type'] == 'hybrid':
+            preds_sorted, probs_sorted = pipeline_hybrid_predict(test_data, model_2, build_features)
+
+        y_test = test_data['failed'].values
+
+        # Compare to baselines
+        print("\n--- BASELINE: Model 1 Only (Aggregated) ---")
+        auc_m1 = roc_auc_score(y_test, test_data['mean_line_risk'].values)
+        print(f"ROC-AUC: {auc_m1:.4f}")
+
+        print("\n--- BASELINE: Model 2 Only ---")
+        X_test_m2 = test_data[build_features].fillna(0)
+        m2_probs = model_2.predict_proba(X_test_m2)[:, 1]
+        auc_m2 = roc_auc_score(y_test, m2_probs)
+        print(f"ROC-AUC: {auc_m2:.4f}")
+
+        print(f"\n--- PIPELINE: {best_strategy_name} ---")
+        auc_pipeline = roc_auc_score(y_test, probs_sorted)
+        print(f"ROC-AUC: {auc_pipeline:.4f}")
+        print(classification_report(y_test, preds_sorted, digits=4))
+
+        # Summary
+        print("\n" + "=" * 70)
+        print("PIPELINE RESULTS SUMMARY")
+        print("=" * 70)
+        print(f"Model 1 (Line agg):  AUC = {auc_m1:.4f}")
+        print(f"Model 2 (Build):     AUC = {auc_m2:.4f}")
+        print(f"Pipeline:            AUC = {auc_pipeline:.4f}")
+
+        best_baseline = max(auc_m1, auc_m2)
+        improvement = auc_pipeline - best_baseline
+        improvement_pct = (improvement / best_baseline) * 100
+
+        print(f"\nBest baseline:       AUC = {best_baseline:.4f}")
+        print(f"Pipeline improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+        if improvement > 0.02:
+            print("\n✓ Pipeline provides meaningful improvement!")
+        elif improvement > 0:
+            print("\n⚠️  Pipeline provides marginal improvement")
+        else:
+            print("\n✗ Pipeline does not improve over baselines")
+
+        # Save results
+        pipeline_metadata = {
+            'best_strategy': best_strategy_name,
+            'best_params': best_params,
+            'auc_model1': auc_m1,
+            'auc_model2': auc_m2,
+            'auc_pipeline': auc_pipeline,
+            'improvement': improvement
+        }
+
+        import json
+
+        with open('processed_data/pipeline_metadata.json', 'w') as f:
+            json.dump(pipeline_metadata, f, indent=2)
+
+        print("\n✓ Saved pipeline metadata to processed_data/pipeline_metadata.json")
+
+else:
+    print("\n✗ Cannot create pipeline (missing line aggregates or Model 2)")
 
 # =========================
 # SUMMARY
