@@ -9,6 +9,13 @@ import joblib
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from datetime import datetime
 
+# ANSI color codes for terminal output
+RED = "\033[91m"
+YELLOW = "\033[93m"
+GREEN = "\033[92m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
 print("=" * 70)
 print("CI/CD FAILURE PREDICTION PIPELINE")
 print("=" * 70)
@@ -31,7 +38,6 @@ try:
 except:
     print("✗ Could not load Model 2")
     model_2 = None
-
 
 # =========================
 # Feature Extraction Functions
@@ -257,20 +263,23 @@ if __name__ == "__main__":
             risk = row['bug_risk']
 
             if risk > 0.7:
-                level = "🔴 HIGH RISK"
+                color = RED
+                level = "HIGH RISK"
                 high_risk_lines.append(idx + 1)
             elif risk > 0.5:
-                level = "🟡 MEDIUM"
+                color = YELLOW
+                level = "MEDIUM RISK"
             else:
-                level = "🟢 LOW"
+                color = GREEN
+                level = "LOW RISK"
 
-            print(f"\nLine {idx + 1}: {level} (risk={risk:.2f})")
-            print(f"  Code: {row['contents'][:60]}")
+            print(f"\n{color}Line {idx+1}: {level} (risk={risk:.2f}){RESET}")
+            print(f"{color}  Code: {row['contents'][:60]}{RESET}")
 
             if row['is_todo_comment']:
-                print(f"  ⚠️  Contains TODO/FIXME/HACK")
+                print(f"{YELLOW}  ⚠️  Contains TODO/FIXME/HACK{RESET}")
             if row['is_comment'] and abs(row['sentiment_compound']) > 0.3:
-                print(f"  💬 Sentiment: {row['sentiment_compound']:.2f}")
+                print(f"{YELLOW}  💬 Sentiment: {row['sentiment_compound']:.2f}{RESET}")
 
         # Summary
         print("\n" + "=" * 70)
@@ -291,6 +300,11 @@ if __name__ == "__main__":
             print(f"  ⚠️  Overall code quality is concerning (avg risk {results['bug_risk'].mean():.2f})")
         else:
             print(f"  ✓ Code quality looks acceptable")
+        print("\n📌 Additional code improvement suggestions:")
+        print("  • Strengthen unit tests around high-risk control flow and error paths.")
+        print("  • Replace magic numbers and hard-coded values with named constants or configuration.")
+        print("  • Reduce deeply nested logic by extracting helper methods and using guard clauses.")
+        print("  • Add or refine logging around risky sections to aid debugging in CI/CD.")
 
     print("\n" + "=" * 70)
     print("EXAMPLE 2: BUILD-LEVEL ANALYSIS")
@@ -341,16 +355,26 @@ if __name__ == "__main__":
         print(f"  • Code churn: {sample_build['git_diff_src_churn']} lines")
         print(f"  • Team size: {sample_build['gh_team_size']}")
         print(f"  • Previous build: {'✓ Passed' if sample_build['git_prev_commit_resolution_status'] else '✗ Failed'}")
-        print(
-            f"  • Time: {'Weekend' if sample_build['is_weekend'] else 'Weekday'}, {'Night' if sample_build['is_night'] else 'Day'}")
+        print(f"  • Time: {'Weekend' if sample_build['is_weekend'] else 'Weekday'}, {'Night' if sample_build['is_night'] else 'Day'}")
 
         print("\n💡 MODEL 2 RECOMMENDATION:")
         if prob > 0.6:
-            print("  🔴 HIGH RISK - Consider additional testing or review")
+            color = RED
+            level = "HIGH RISK"
+            guidance = "Consider additional testing, peer review, and staging rollouts."
         elif prob > 0.4:
-            print("  🟡 MODERATE RISK - Standard review process")
+            color = YELLOW
+            level = "MODERATE RISK"
+            guidance = "Follow your standard review process and monitor post-deploy telemetry."
         else:
-            print("  🟢 LOW RISK - Proceed with confidence")
+            color = GREEN
+            level = "LOW RISK"
+            guidance = "Proceed with confidence, but keep lightweight monitoring in place."
+
+        print(f"{color}  {level} - {guidance}{RESET}")
+        print("  • Keep CI jobs fast and deterministic to spot regressions early.")
+        print("  • Prioritize tests around high-churn areas and frequently touched files.")
+        print("  • Review build configuration (caching, dependencies, environment flags) for flakiness.")
 
     # =========================
     # COMBINED ASSESSMENT
@@ -370,25 +394,27 @@ if __name__ == "__main__":
         print("\n🎯 FINAL RECOMMENDATION:")
 
         if line_risk > 0.5 and build_risk > 0.5:
-            print("  🔴 CRITICAL: Both models indicate high risk")
-            print("     → Require thorough code review")
-            print("     → Add extra tests")
-            print("     → Consider breaking into smaller changes")
+            print(f"{RED}  CRITICAL: Both models indicate high risk{RESET}")
+            print("     → Require thorough code review and sign-off from senior reviewers.")
+            print("     → Add targeted regression and integration tests for risky areas.")
+            print("     → Consider breaking this change into smaller, independently deployable pieces.")
 
         elif line_risk > 0.5:
-            print("  🟡 Code quality concerns detected")
-            print("     → Review high-risk lines before merging")
-            print("     → Build risk is acceptable")
+            print(f"{YELLOW}  Code quality concerns detected{RESET}")
+            print("     → Review high-risk lines before merging and refactor where possible.")
+            print("     → Build risk is acceptable; focus on improving readability and test coverage.")
 
         elif build_risk > 0.5:
-            print("  🟡 Build failure risk detected")
-            print("     → Code quality looks okay")
-            print("     → Check build configuration and dependencies")
+            print(f"{YELLOW}  Build failure risk detected{RESET}")
+            print("     → Code quality looks okay; investigate build scripts, environments, and dependencies.")
+            print("     → Introduce canary deployments or gradual rollouts to limit blast radius.")
 
         else:
             print("  ✓ Both models show acceptable risk")
-            print("    → Proceed with standard review process")
+            print("    → Proceed with standard review process and routine CI monitoring.")
 
     print("\n" + "=" * 70)
     print("Pipeline ready! Modify sample_code and sample_build above to test.")
     print("=" * 70)
+
+    # color the lines 
