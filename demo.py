@@ -1,8 +1,3 @@
-"""
-Dual-Model CI/CD Prediction Pipeline
-Provides separate assessments from line-level and build-level models
-"""
-
 import pandas as pd
 import numpy as np
 import joblib
@@ -20,9 +15,8 @@ print("=" * 70)
 print("CI/CD FAILURE PREDICTION PIPELINE")
 print("=" * 70)
 
-# =========================
-# Load Trained Models
-# =========================
+
+
 print("\nLoading models...")
 
 try:
@@ -39,20 +33,10 @@ except:
     print("✗ Could not load Model 2")
     model_2 = None
 
-# =========================
+
 # Feature Extraction Functions
-# =========================
 
 def extract_line_features(lines):
-    """
-    Extract features from lines of code
-
-    Args:
-        lines: list of strings (code lines)
-
-    Returns:
-        DataFrame with features
-    """
     df = pd.DataFrame({'contents': lines})
     df['content_clean'] = df['contents'].astype(str).str.strip()
 
@@ -130,15 +114,6 @@ def extract_line_features(lines):
 
 
 def predict_line_defects(lines):
-    """
-    Predict which lines are likely buggy
-
-    Args:
-        lines: list of strings (code lines)
-
-    Returns:
-        DataFrame with predictions and risk scores
-    """
     if model_1 is None:
         print("✗ Model 1 not loaded")
         return None
@@ -173,15 +148,6 @@ def predict_line_defects(lines):
 
 
 def predict_build_failure(build_metrics):
-    """
-    Predict if a build will fail
-
-    Args:
-        build_metrics: dict with build features
-
-    Returns:
-        (prediction, probability, assessment)
-    """
     if model_2 is None:
         print("✗ Model 2 not loaded")
         return None, None, None
@@ -220,10 +186,8 @@ def predict_build_failure(build_metrics):
     return prediction, probability, assessment
 
 
-# =========================
-# EXAMPLE USAGE
-# =========================
 
+# EXAMPLE USAGE
 if __name__ == "__main__":
 
     print("\n" + "=" * 70)
@@ -250,36 +214,77 @@ if __name__ == "__main__":
         "    }",
         "}"
     ]
+    mixed_sentiment_code = [
+        "# This function works reasonably well but has some issues",
+        "def calculate_discount(price, customer_type):",
+        "    '''",
+        "    Calculates discount based on customer type",
+        "    TODO: Need to add VIP customer handling - currently missing",
+        "    '''",
+        "    # Basic discount logic - works fine for standard cases",
+        "    if customer_type == 'regular':",
+        "        # Standard discount rate - this is acceptable",
+        "        return price * 0.05",
+        "    elif customer_type == 'premium':",
+        "        # Great discount for premium customers!",
+        "        return price * 0.15",
+        "    elif customer_type == 'employee':",
+        "        # FIXME: Employee discount is broken - gives wrong amount",
+        "        # TODO: Fix this calculation - it's causing complaints",
+        "        return price * 0.25  # This is wrong and needs correction",
+        "    else:",
+        "        # Default case - no discount applied",
+        "        return 0",
+    ]
 
+    edge_case_sarcasm_code = [
+        "# This is an extraordinarily wonderful and absolutely magnificent implementation",
+        "# that demonstrates excellent coding practices and brilliant design patterns",
+        "# showcasing the developer's outstanding skills and impressive knowledge",
+        "",
+        "# WARNING: This is a catastrophically broken piece of garbage code that is",
+        "# completely useless and dangerously unstable causing massive failures and",
+        "# horrible bugs throughout the entire system destroying everything it touches",
+        "def edge_case_function():",
+        "    pass  # This is fine 🙂  (it's not fine at all)",
+    ]
     if model_1:
         print("\nAnalyzing code with Model 1...")
         results = predict_line_defects(sample_code)
 
-        print("\n📝 Line-by-Line Assessment:")
+
+        print("\n Line-by-Line Assessment:")
         print("=" * 70)
 
         high_risk_lines = []
+        # If the model is very conservative, absolute probabilities may be tiny.
+        # Use both absolute thresholds and percentile thresholds to surface relative risk.
+        p90 = float(results["bug_risk"].quantile(0.90))
+        p75 = float(results["bug_risk"].quantile(0.75))
+        print(f"\nRisk distribution: min={results['bug_risk'].min():.4f} "
+              f"p75={p75:.4f} p90={p90:.4f} max={results['bug_risk'].max():.4f}")
         for idx, row in results.iterrows():
             risk = row['bug_risk']
-
-            if risk > 0.7:
+            # Prefer absolute thresholds if probabilities are well-spread,
+            # otherwise fall back to relative thresholds.
+            if risk > 0.7 or (p90 > 0 and risk >= p90):
                 color = RED
                 level = "HIGH RISK"
                 high_risk_lines.append(idx + 1)
-            elif risk > 0.5:
+            elif risk > 0.5 or (p75 > 0 and risk >= p75):
                 color = YELLOW
                 level = "MEDIUM RISK"
             else:
                 color = GREEN
                 level = "LOW RISK"
 
-            print(f"\n{color}Line {idx+1}: {level} (risk={risk:.2f}){RESET}")
+            print(f"\n{color}Line {idx+1}: {level} (risk={risk:.4f}){RESET}")
             print(f"{color}  Code: {row['contents'][:60]}{RESET}")
 
             if row['is_todo_comment']:
                 print(f"{YELLOW}  ⚠️  Contains TODO/FIXME/HACK{RESET}")
             if row['is_comment'] and abs(row['sentiment_compound']) > 0.3:
-                print(f"{YELLOW}  💬 Sentiment: {row['sentiment_compound']:.2f}{RESET}")
+                print(f"{YELLOW}  Sentiment: {row['sentiment_compound']:.2f}{RESET}")
 
         # Summary
         print("\n" + "=" * 70)
@@ -287,8 +292,8 @@ if __name__ == "__main__":
         print("=" * 70)
         print(f"Total lines: {len(results)}")
         print(f"High-risk lines: {len(high_risk_lines)} → {high_risk_lines}")
-        print(f"Average risk: {results['bug_risk'].mean():.2f}")
-        print(f"Max risk: {results['bug_risk'].max():.2f}")
+        print(f"Average risk: {results['bug_risk'].mean():.4f}")
+        print(f"Max risk: {results['bug_risk'].max():.4f}")
         print(f"TODO comments: {results['is_todo_comment'].sum()}")
 
         print("\n💡 RECOMMENDATION:")
@@ -299,7 +304,7 @@ if __name__ == "__main__":
         if results['bug_risk'].mean() > 0.5:
             print(f"  ⚠️  Overall code quality is concerning (avg risk {results['bug_risk'].mean():.2f})")
         else:
-            print(f"  ✓ Code quality looks acceptable")
+            print(f"  Code quality looks acceptable")
         print("\n📌 Additional code improvement suggestions:")
         print("  • Strengthen unit tests around high-risk control flow and error paths.")
         print("  • Replace magic numbers and hard-coded values with named constants or configuration.")
@@ -338,18 +343,69 @@ if __name__ == "__main__":
         'large_change': 0,
         'many_files_touched': 0
     }
-
+    sample_build_mixed = {
+    "gh_num_commits_in_push": 2,
+    "git_prev_commit_resolution_status": 1,  # previous build passed
+    "gh_team_size": 3,
+    "git_num_all_built_commits": 120,
+    "gh_num_commit_comments": 1,
+    "git_diff_src_churn": 35,        # moderate lines changed
+    "gh_diff_files_added": 0,
+    "gh_diff_files_deleted": 0,
+    "gh_diff_files_modified": 2,
+    "gh_diff_src_files": 2,
+    "gh_diff_doc_files": 0,
+    "gh_diff_other_files": 0,
+    "gh_num_commits_on_files_touched": 15,
+    "gh_sloc": 5000,
+    "hour": 14,                      # afternoon
+    "day_of_week": 2,                # Wednesday
+    "month": 5,
+    "is_weekend": 0,
+    "is_night": 0,
+    "files_per_commit": 1.0,
+    "churn_per_file": 17.5,
+    "team_commits_ratio": 0.5,
+    "large_change": 0,
+    "many_files_touched": 0,
+    }
+    sample_build_edge_case = {
+    "gh_num_commits_in_push": 5,
+    "git_prev_commit_resolution_status": 0,  # previous build failed
+    "gh_team_size": 6,
+    "git_num_all_built_commits": 450,
+    "gh_num_commit_comments": 4,
+    "git_diff_src_churn": 320,       # large change
+    "gh_diff_files_added": 2,
+    "gh_diff_files_deleted": 1,
+    "gh_diff_files_modified": 9,
+    "gh_diff_src_files": 9,
+    "gh_diff_doc_files": 1,
+    "gh_diff_other_files": 0,
+    "gh_num_commits_on_files_touched": 40,
+    "gh_sloc": 18000,
+    "hour": 2,                       # night deploy
+    "day_of_week": 6,                # Sunday
+    "month": 11,
+    "is_weekend": 1,
+    "is_night": 1,
+    "files_per_commit": 9 / (5 + 1),
+    "churn_per_file": 320 / (9 + 1),
+    "team_commits_ratio": 5 / (6 + 1),
+    "large_change": 1,
+    "many_files_touched": 1,
+    }
     if model_2:
         print("\nAnalyzing build with Model 2...")
-        pred, prob, assessment = predict_build_failure(sample_build)
+        pred, prob, assessment = predict_build_failure(sample_build_edge_case)
 
-        print("\n🏗️  Build Assessment:")
+        print("\n  Build Assessment:")
         print("=" * 70)
         print(f"Prediction: {'❌ WILL FAIL' if pred == 1 else '✅ WILL PASS'}")
         print(f"Failure probability: {prob:.1%}")
         print(f"Risk level: {assessment}")
 
-        print("\n📊 Key Metrics:")
+        print("\n Key Metrics:")
         print(f"  • Commits: {sample_build['gh_num_commits_in_push']}")
         print(f"  • Files modified: {sample_build['gh_diff_files_modified']}")
         print(f"  • Code churn: {sample_build['git_diff_src_churn']} lines")
@@ -357,7 +413,7 @@ if __name__ == "__main__":
         print(f"  • Previous build: {'✓ Passed' if sample_build['git_prev_commit_resolution_status'] else '✗ Failed'}")
         print(f"  • Time: {'Weekend' if sample_build['is_weekend'] else 'Weekday'}, {'Night' if sample_build['is_night'] else 'Day'}")
 
-        print("\n💡 MODEL 2 RECOMMENDATION:")
+        print("\n MODEL 2 RECOMMENDATION:")
         if prob > 0.6:
             color = RED
             level = "HIGH RISK"
@@ -376,10 +432,8 @@ if __name__ == "__main__":
         print("  • Prioritize tests around high-churn areas and frequently touched files.")
         print("  • Review build configuration (caching, dependencies, environment flags) for flakiness.")
 
-    # =========================
-    # COMBINED ASSESSMENT
-    # =========================
 
+    # COMBINED ASSESSMENT
     if model_1 and model_2:
         print("\n" + "=" * 70)
         print("COMBINED ASSESSMENT")
@@ -391,7 +445,7 @@ if __name__ == "__main__":
         print(f"\nModel 1 (Code Quality):  {line_risk:.2f} avg risk")
         print(f"Model 2 (Build Outcome): {build_risk:.2f} failure prob")
 
-        print("\n🎯 FINAL RECOMMENDATION:")
+        print("\n FINAL RECOMMENDATION:")
 
         if line_risk > 0.5 and build_risk > 0.5:
             print(f"{RED}  CRITICAL: Both models indicate high risk{RESET}")
@@ -416,5 +470,3 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("Pipeline ready! Modify sample_code and sample_build above to test.")
     print("=" * 70)
-
-    # color the lines 

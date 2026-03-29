@@ -9,17 +9,237 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import (
+    classification_report,
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    RocCurveDisplay,
+)
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import joblib
+import matplotlib.pyplot as plt
+
+
+# Custom VADER configuration for developer-style comments.
+# This extends VADER's default lexicon with developer vocabulary and DevOps terms.
+# Source for DevOps term list: https://www.globalknowledge.com/us-en/topics/devops/glossary-of-terms/#gref
+DEV_LEXICON_UPDATES = {
+    # === STRONGLY NEGATIVE (developer frustration / code smells) ===
+    "broken": -3.0,
+    "terrible": -3.0,
+    "horrible": -3.2,
+    "awful": -3.0,
+    "nightmare": -3.5,
+    "disaster": -3.5,
+    "catastrophic": -4.0,
+    "garbage": -3.2,
+    "crap": -2.8,
+    "trash": -3.0,
+    "mess": -2.5,
+    "messy": -2.7,
+    "ugly": -2.8,
+    "hack": -2.5,
+    "hacky": -2.7,
+    "ugly hack": -3.5,
+    "quick hack": -2.8,
+    "temporary workaround": -2.0,
+    "workaround": -1.8,
+    "buggy": -2.8,
+    "flaky": -2.9,
+    "unreliable": -2.5,
+    "slow": -2.0,
+    "crashing": -3.0,
+    "failing": -2.5,
+    "pathetic": -2.8,
+    "stupid": -2.5,
+    "ridiculous": -2.3,
+    "convoluted": -2.4,
+    "spaghetti": -2.6,
+    "bloated": -2.3,
+    "brittle": -2.4,
+    "fragile": -2.2,
+    "leaky": -2.1,
+    "race condition": -3.0,
+    "regression": -2.0,
+
+    # === TODO / URGENT FIX WORDS ===
+    "todo": -2.2,
+    "TODO": -2.2,
+    "fixme": -2.8,
+    "FIXME": -2.8,
+    "xxx": -3.0,
+    "XXX": -3.0,
+    "bug": -2.7,
+    "BUG": -2.7,
+    "urgent": -2.0,
+    "critical": -2.3,
+    "immediate": -2.1,
+
+    # === WARNING / CAUTION ===
+    "warning": -1.8,
+    "WARNING": -1.8,
+    "caution": -1.7,
+    "danger": -2.5,
+    "risky": -2.0,
+    "beware": -1.9,
+
+    # === POSITIVE / PRAISE ===
+    "excellent": 3.0,
+    "great": 2.8,
+    "clean": 2.5,
+    "elegant": 2.7,
+    "efficient": 2.6,
+    "robust": 2.8,
+    "solid": 2.4,
+    "well-designed": 3.0,
+    "beautifully": 2.9,
+    "superb": 3.1,
+    "outstanding": 3.0,
+    "brilliant": 3.2,
+    "fantastic": 2.9,
+    "amazing": 3.0,
+    "perfect": 3.1,
+    "smooth": 2.6,
+    "flawless": 3.0,
+    "impressive": 2.8,
+    "neat": 2.5,
+    "well tested": 2.9,
+    "well-tested": 2.9,
+    "optimized": 2.7,
+    "scalable": 2.6,
+    "performant": 2.5,
+    "safe": 1.5,
+    "stable": 2.0,
+    "works fine": 1.0,
+    "good enough": 0.5,
+
+    # === SARCASTIC / SELF-DEPRECATING ===
+    "works on my machine": -2.5,
+    "magic": -1.8,
+    "voodoo": -2.0,
+    "black magic": -2.2,
+    "dark magic": -2.3,
+    "somehow": -1.5,
+    "surprisingly": -1.2,
+    "miracle": -1.8,
+    "please don't touch": -2.0,
+    "don't ask": -1.9,
+
+    # === DevOps glossary terms (mostly mild positive / process-oriented) ===
+    "devops": 1.8,
+    "devsecops": 1.6,
+    "continuous integration": 1.9,
+    "continuous delivery": 1.7,
+    "deployment": 1.2,
+    "release": 1.0,
+    "automation": 1.6,
+    "toolchain": 1.0,
+    "containers": 1.1,
+    "microservices": 0.9,
+    "serverless": 0.7,
+    "chatops": 0.8,
+    "scrum": 0.6,
+    "kanban": 0.6,
+    "kanban board": 0.4,
+    "agile": 0.9,
+    "agile manifesto": 0.8,
+    "test driven development": 1.0,
+    "definition of done": 0.7,
+    "kaizen": 0.9,
+    "lean": 0.6,
+    "value stream mapping": 0.6,
+    "velocity": 0.3,
+    "cadence": 0.2,
+    "flow": 0.4,
+    "time to value": 0.4,
+
+    # Process pain points / negative glossary terms
+    "bottleneck": -1.3,
+    "constraint": -0.8,
+    "waste": -1.2,
+    "work in progress": -0.6,
+    "wip": -0.6,
+    "muda": -1.0,
+    "mura": -0.7,
+    "muri": -0.9,
+    "waterfall": -0.8,
+
+    # === Threads / processes / concurrency vocabulary ===
+    "thread": -0.4,
+    "threads": -0.4,
+    "process": -0.3,
+    "processes": -0.3,
+    "concurrency": -0.8,
+    "parallelism": 0.2,
+    "race": -2.2,
+    "race condition": -3.0,
+    "deadlock": -3.2,
+    "livelock": -2.7,
+    "mutex": -0.6,
+    "lock": -0.8,
+    "locked": -1.2,
+    "locking": -0.9,
+    "unlock": 0.2,
+    "semaphore": -0.5,
+    "contention": -1.6,
+    "starvation": -2.3,
+    "hang": -2.6,
+    "hung": -2.6,
+    "stuck": -2.2,
+    "freeze": -2.4,
+    "frozen": -2.4,
+    "timeout": -2.0,
+    "timeouts": -2.0,
+    "kill": -2.0,
+    "kill()": -2.0,
+    "killed": -2.1,
+    "terminate": -1.8,
+    "terminated": -1.9,
+    "abort": -2.0,
+    "aborted": -2.1,
+    "SIGKILL": -2.4,
+    "SIGTERM": -1.9,
+    "fork": -0.6,
+    "spawn": -0.3,
+    "zombie": -2.0,
+    "zombie process": -2.4,
+}
+
+
+def create_dev_analyzer() -> SentimentIntensityAnalyzer:
+    analyzer = SentimentIntensityAnalyzer()
+    analyzer.lexicon.update(DEV_LEXICON_UPDATES)
+    return analyzer
 
 print("=" * 70)
 print("TWO-MODEL CI/CD PREDICTION SYSTEM")
 print("=" * 70)
 
-# =========================
+
+def save_confusion_matrix(y_true, y_pred, title: str, out_path: str) -> None:
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
+    fig, ax = plt.subplots(figsize=(5.5, 5))
+    disp.plot(ax=ax, colorbar=False, values_format="d")
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+
+def save_roc_curve(model, X_test, y_test, title: str, out_path: str) -> float:
+    fig, ax = plt.subplots(figsize=(6, 5))
+    roc_disp = RocCurveDisplay.from_estimator(model, X_test, y_test, ax=ax)
+    ax.plot([0, 1], [0, 1], linestyle="--", linewidth=1, color="gray")
+    ax.set_title(f"{title} (AUC={roc_disp.roc_auc:.3f})")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return float(roc_disp.roc_auc)
+
+
 # MODEL 1: Line-Level Defect Prediction
-# =========================
 print("\n" + "=" * 70)
 print("MODEL 1: LINE-LEVEL DEFECT PREDICTION")
 print("=" * 70)
@@ -38,13 +258,11 @@ for root, dirs, files in os.walk('data/train-lines'):
 
                 # Check if parsing worked
                 if len(temp_df.columns) < 3:
-                    # Try without delimiter specification
+                    # Try without delimiter
                     temp_df = pd.read_csv(filepath)
 
-                # Clean column names
                 temp_df.columns = temp_df.columns.str.strip().str.strip('"')
 
-                # Check if this is actually data
                 if 'class_value' in temp_df.columns or 'build_status' in temp_df.columns:
                     line_dfs.append(temp_df)
                     file_count += 1
@@ -58,13 +276,13 @@ for root, dirs, files in os.walk('data/train-lines'):
                 continue
 
 if not line_dfs:
-    print("\n⚠️  WARNING: Could not load train-lines data!")
+    print("\n⚠ WARNING: Could not load train-lines data!")
     print("Skipping Model 1 and proceeding with Model 2 only.\n")
     model_1 = None
 else:
     df_lines = pd.concat(line_dfs, ignore_index=True)
-    print(f"\n✓ Total lines: {len(df_lines):,}")
-    print(f"✓ Columns: {df_lines.columns.tolist()}")
+    print(f"\n Total lines: {len(df_lines):,}")
+    print(f" Columns: {df_lines.columns.tolist()}")
 
     # Inspect the data
     print("\nFirst few rows:")
@@ -108,24 +326,21 @@ else:
             print(f"  Buggy lines: {df_lines['is_buggy'].sum():,} ({df_lines['is_buggy'].mean():.2%})")
             print(f"  Clean lines: {(df_lines['is_buggy'] == 0).sum():,}")
             if len(df_lines) > 100000:
-                print(f"\n⚠️  Large dataset detected ({len(df_lines):,} lines)")
+                print(f"\n Large dataset detected ({len(df_lines):,} lines)")
                 print("Performing stratified sampling to keep class balance...")
 
                 df_lines = df_lines.groupby('is_buggy', group_keys=False).apply(
                     lambda x: x.sample(min(len(x), 50000), random_state=42)
                 ).reset_index(drop=True)
 
-                # print(f"✓ Sampled to {len(df_lines):,} lines")
-                # print(f"  Buggy: {df_lines['is_buggy'].sum():,} ({df_lines['is_buggy'].mean():.2%})")
-                # print(f"  Clean: {(df_lines['is_buggy'] == 0).sum():,}")
 
         except Exception as e:
-            print(f"\n✗ Error creating target: {e}")
+            print(f"\n Error creating target: {e}")
             print("Skipping Model 1")
             model_1 = None
             df_lines = None
     else:
-        print("✗ No target column found!")
+        print("No target column found!")
         model_1 = None
         df_lines = None
 
@@ -149,8 +364,8 @@ else:
             ).astype(int)
 
             # === VADER ONLY ON COMMENTS (MAXIMUM MEMORY EFFICIENCY) ===
-            print("\nPerforming sentiment analysis on COMMENTS ONLY...")
-            analyzer = SentimentIntensityAnalyzer()
+            print("\nPerforming sentiment analysis on COMMENTS ONLY (dev-tuned VADER)...")
+            analyzer = create_dev_analyzer()
 
             comment_mask = df_lines['is_comment'] == 1
             num_comments = comment_mask.sum()
@@ -267,29 +482,24 @@ else:
         # Select features for line model
         line_features = []
         potential_features = [
-            # Size metrics
+
             'line_length',
             'nested_depth',
 
-            # VADER sentiment features
             'sentiment_neg',
             'sentiment_pos',
             'sentiment_neu',
             'sentiment_compound',
 
-            # Comment indicators
             'is_comment',
             'is_todo_comment',
 
-            # Code complexity
             'control_flow_count',
             'method_call_count',
             'has_exception',
 
-            # Git diff
             'is_diff_header',
 
-            # Code quality
             'has_magic_number',
             'has_logging',
             'has_null_check',
@@ -368,6 +578,23 @@ else:
                 print(classification_report(y_test_l, y_pred_l, digits=4))
                 print(f"ROC-AUC: {roc_auc_score(y_test_l, y_prob_l):.4f}")
 
+                # Save evaluation plots
+                os.makedirs("processed_data", exist_ok=True)
+                save_confusion_matrix(
+                    y_test_l,
+                    y_pred_l,
+                    title="Model 1 Confusion Matrix (Line-level)",
+                    out_path="processed_data/model1_confusion_matrix.png",
+                )
+                save_roc_curve(
+                    model_1,
+                    X_test_l,
+                    y_test_l,
+                    title="Model 1 ROC Curve (Line-level)",
+                    out_path="processed_data/model1_roc_curve.png",
+                )
+                print("✓ Saved Model 1 plots to processed_data/")
+
                 # Save Model 1
                 os.makedirs('processed_data', exist_ok=True)
                 joblib.dump(model_1, 'processed_data/line_defect_model.pkl')
@@ -393,17 +620,28 @@ for root, dirs, files in os.walk('data/tsm'):
             try:
                 temp_df = pd.read_csv(filepath, delimiter='$', quotechar='"')
                 temp_df.columns = temp_df.columns.str.strip().str.strip('"')
+
+                # Skip label-only dependency files that only contain `tr_status`
+                if list(temp_df.columns) == ['tr_status']:
+                    continue
+
+                # Keep only rows with valid build status 0/1
+                if 'tr_status' in temp_df.columns:
+                    temp_df = temp_df[temp_df['tr_status'].isin([0, 1, '0', '1'])]
+
                 metric_dfs.append(temp_df)
-            except:
-                pass
+            except Exception as e:
+                print(f"  Skipping {filename} due to read error: {e}")
+                continue
 
 df_builds = pd.concat(metric_dfs, ignore_index=True)
-print(f"✓ Total builds: {len(df_builds):,}")
+print(f"✓ Total builds (with features): {len(df_builds):,}")
 
-
-# previous versioon - potentiall an error here. uncomment if the acc drops
+# Clean and construct binary target
+df_builds['tr_status'] = pd.to_numeric(df_builds['tr_status'], errors='coerce')
+df_builds = df_builds[df_builds['tr_status'].isin([0, 1])].copy()
 df_builds['failed'] = df_builds['tr_status'].astype(int)
-print(f"Failure rate: {df_builds['failed'].mean():.2%}")
+print(f"Failure rate (after cleaning): {df_builds['failed'].mean():.2%}")
 
 # =========================
 # LINK LINES TO BUILDS (Timestamp Matching)
@@ -547,6 +785,7 @@ build_features = [
     'team_commits_ratio',
     'large_change',
     'many_files_touched'
+    # 'prev_build_failed'
 ]
 
 build_features = [c for c in build_features if c in df_builds.columns]
@@ -571,18 +810,32 @@ print(f"Test:  {len(X_test_b):,} rows ({y_test_b.mean():.2%} fail rate)")
 
 # Train Model 2
 print("\nTraining build-level failure model...")
+
+# Handle class imbalance explicitly for XGBoost
+num_positive = (y_train_b == 1).sum()
+num_negative = (y_train_b == 0).sum()
+if num_positive == 0:
+    scale_pos_weight = 1.0
+else:
+    scale_pos_weight = num_negative / num_positive
+
+print(f"Class balance (train): positive={num_positive:,}, negative={num_negative:,}")
+print(f"Using scale_pos_weight={scale_pos_weight:.2f} for XGBoost")
+
 model_2 = Pipeline([
     ('scaler', StandardScaler()),
     ('classifier', XGBClassifier(
-        n_estimators=300,
+        n_estimators=400,
         max_depth=8,
         learning_rate=0.05,
-        min_child_weight=3,
+        min_child_weight=4,
         subsample=0.8,
         colsample_bytree=0.8,
         random_state=42,
         eval_metric='logloss',
-        # scale_pos_weight=len(y_train_b[y_train_b == 0]) / len(y_train_b[y_train_b == 1])
+        scale_pos_weight=scale_pos_weight,
+        reg_lambda=1.0,
+        reg_alpha=0.0
     ))
 ])
 
@@ -597,6 +850,23 @@ print("MODEL 2 RESULTS")
 print("=" * 70)
 print(classification_report(y_test_b, y_pred_b, digits=4))
 print(f"ROC-AUC: {roc_auc_score(y_test_b, y_prob_b):.4f}")
+
+# Save evaluation plots
+os.makedirs("processed_data", exist_ok=True)
+save_confusion_matrix(
+    y_test_b,
+    y_pred_b,
+    title="Model 2 Confusion Matrix (Build-level, XGBoost)",
+    out_path="processed_data/model2_confusion_matrix_xgb.png",
+)
+save_roc_curve(
+    model_2,
+    X_test_b,
+    y_test_b,
+    title="Model 2 ROC Curve (Build-level, XGBoost)",
+    out_path="processed_data/model2_roc_curve_xgb.png",
+)
+print("✓ Saved Model 2 plots to processed_data/")
 
 # Feature importance
 importance_df = pd.DataFrame({
@@ -650,6 +920,20 @@ print(f"XGBoost AUC:       {roc_auc_score(y_test_b, y_prob_b):.4f}")
 if auc_rf > roc_auc_score(y_test_b, y_prob_b):
     print("✓ Random Forest is better - saving it instead")
     joblib.dump(model_2_rf, 'processed_data/build_failure_model_clean.pkl')
+    save_confusion_matrix(
+        y_test_b,
+        model_2_rf.predict(X_test_b),
+        title="Model 2 Confusion Matrix (Build-level, RandomForest)",
+        out_path="processed_data/model2_confusion_matrix_rf.png",
+    )
+    save_roc_curve(
+        model_2_rf,
+        X_test_b,
+        y_test_b,
+        title="Model 2 ROC Curve (Build-level, RandomForest)",
+        out_path="processed_data/model2_roc_curve_rf.png",
+    )
+    print("✓ Saved Random Forest plots to processed_data/")
 
 #     model 2 alternative trained
 # =========================
@@ -700,17 +984,4 @@ print("\n✓ Model 2 (Build-level): TRAINED & SAVED")
 print(f"  → Build failure prediction: AUC {roc_auc_score(y_test_b, y_prob_b):.4f}")
 print(f"  → File: processed_data/build_failure_model_clean.pkl")
 
-print("\n📊 Research Contribution:")
-print("  Demonstrated empirically that hierarchical ensemble fails due to:")
-print("    1. Severe granularity mismatch (5 lines vs entire build)")
-print("    2. Different prediction targets (code quality vs build outcome)")
-print("    3. Information loss through aggregation")
 
-print("\n🚀 Next Steps:")
-print("  1. Run predict_pipeline.py to test both models")
-print("  2. Use models independently for different purposes")
-print("  3. Future work: collect comprehensive line data for better alignment")
-
-print("\n✓ Done!")
-    
-# model ensemble; voting mechanisms sikit learn has gread setups for it - look up that documentation
